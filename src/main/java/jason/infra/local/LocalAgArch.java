@@ -4,8 +4,10 @@ import java.io.IOException;
 import java.io.ObjectInputStream;
 import java.io.Serializable;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
@@ -23,8 +25,15 @@ import jason.asSemantics.Circumstance;
 import jason.asSemantics.Intention;
 import jason.asSemantics.Message;
 import jason.asSemantics.TransitionSystem;
+import jason.asSemantics.Tuple;
 import jason.asSyntax.Atom;
 import jason.asSyntax.Literal;
+import jason.asSyntax.LiteralImpl;
+import jason.asSyntax.Plan;
+import jason.asSyntax.PlanBody;
+import jason.asSyntax.Trigger;
+import jason.asSyntax.Trigger.TEOperator;
+import jason.asSyntax.Trigger.TEType;
 import jason.mas2j.ClassParameters;
 import jason.runtime.RuntimeServices;
 import jason.runtime.RuntimeServicesFactory;
@@ -61,6 +70,51 @@ public class LocalAgArch extends AgArch implements Runnable, Serializable {
     protected transient Logger logger  = Logger.getLogger(LocalAgArch.class.getName());
 
     private static List<MsgListener> msgListeners = null;
+
+    /** Mapping of cpX → functor name */
+    private final Map<Integer, String> cpBindings = new LinkedHashMap<>();
+
+    /** Last seen severity label for each cp */
+    private final Map<Integer, String> lastVals = new HashMap<>();
+
+    // RosMaster added for instant trigger of Critical Severity perceptions
+    //private MyRosMaster myRosMaster;
+
+    private static final Map<String, Integer> cpToPriority = new HashMap<>();
+    static {
+        Map.of(
+            5, List.of("cp4"),             //Catastrophic
+            4, List.of("cp1" ),                   //Hazardous
+            3, List.of("cp0"),                  //Major
+            2, List.of("cp2"),            //Minor
+            1, List.of("cp3")             //No Effect
+        ).forEach((prio, cps) -> cps.forEach(cp -> cpToPriority.put(cp, prio)));
+    }
+
+    private static final Map<Integer, String> priorityToMode = new HashMap<>();
+    static {
+        priorityToMode.put(5, "Bypass");
+        priorityToMode.put(4, "Expedited-RC");
+        priorityToMode.put(3, "Expedited-RC");
+        priorityToMode.put(2, "Standard-RC");
+        priorityToMode.put(1, "Standard-RC");
+    }
+
+    /** Mapping of cp functor -> reaction string (e.g., "cp1" -> "react_cp1") */
+    private static final Map<String, String> cpReactions = new HashMap<>();
+    static {
+        cpReactions.put("cp0", "cp0_Minor");    // !react_cp0
+        cpReactions.put("cp1", "cp1_Major");    // react_cp1 [cr]
+        cpReactions.put("cp2", "cp2_Catastrophic");  //  internalAction(cp2-Catastrophic)
+        cpReactions.put("cp3", "react_cp3");    
+        cpReactions.put("cp4", "failsafe_2");
+        cpReactions.put("cp5", "react_cp5");
+        cpReactions.put("cp6", "react_cp6");
+        cpReactions.put("cp7", "failsafe_2");
+        cpReactions.put("cp8", "react_cp8");
+        cpReactions.put("cp9", "cp9_catastrophic");
+    }
+
     public static void addMsgListener(MsgListener l) {
         if (msgListeners == null) {
             msgListeners = new ArrayList<>();
@@ -78,7 +132,24 @@ public class LocalAgArch extends AgArch implements Runnable, Serializable {
         masRunner   = BaseLocalMAS.getRunner();
     }
 
+    public LocalAgArch() {
+        super();
 
+        // Bind cp0 directly to "cp0"
+        cpToPriority.entrySet().stream()
+        .sorted((a, b) -> Integer.compare(b.getValue(), a.getValue())) // Descending priority
+        .forEach(entry -> {
+            String cp = entry.getKey(); // e.g., "cp7"
+            try {
+                int cpIndex = Integer.parseInt(cp.replace("cp", ""));
+                cpBindings.put(cpIndex, cp);
+                lastVals.put(cpIndex, "None");
+            } catch (NumberFormatException e) {
+                System.err.println("Invalid CP key format: " + cp);
+            }
+        });
+
+        }
     /**
      * Creates the user agent architecture, default architecture is
      * jason.architecture.AgArch. The arch will create the agent that creates
@@ -214,6 +285,15 @@ public class LocalAgArch extends AgArch implements Runnable, Serializable {
         } while (running && ++i < cyclesSense && !ts.canSleepSense());
     }
 
+    protected void expeditedRP() {
+        TransitionSystem ts = getTS();
+
+        int i = 0;
+        do { 
+            ts.expeditedRP();
+        } while (running && ++i < cyclesSense && !ts.canSleepSense());
+    }
+
     //int sumDel = 0; int nbDel = 0;
     protected void deliberate() {
         TransitionSystem ts = getTS();
@@ -245,17 +325,59 @@ public class LocalAgArch extends AgArch implements Runnable, Serializable {
     }
 
     protected void reasoningCycle() {
-        getFirstAgArch().reasoningCycleStarting();
+    //     getFirstAgArch().reasoningCycleStarting();
 
+    //     sense();
+    //     deliberate();
+    //     act();
+
+    //     getFirstAgArch().reasoningCycleFinished();
+
+    //LBB attempt 1:
+    //long start = System.currentTimeMillis();
+
+        getFirstAgArch().reasoningCycleStarting();
+        long start = System.nanoTime();
+
+        //criticalRC();
+        // TransitionSystem ts = getTS(); 
+        // ts.expeditedRP();
+        getTS().expeditedRP();
+        long endSenLBB = System.nanoTime();
         sense();
+        long endSen = System.nanoTime();
         deliberate();
+        long endDel = System.nanoTime();
         act();
+        long endRC = System.nanoTime();
 
         getFirstAgArch().reasoningCycleFinished();
+        //long pass = System.currentTimeMillis() - start;
+  
     }
 
     public void run() {
         TransitionSystem ts = getTS();
+        /*cpToPriority.entrySet().stream()
+        .sorted((a, b) -> Integer.compare(b.getValue(), a.getValue())) // Descending priority
+        .forEach(entry -> {
+            String cp = entry.getKey(); // e.g., "cp7"
+            try {
+                int cpIndex = Integer.parseInt(cp.replace("cp", ""));
+                cpBindings.put(cpIndex, cp);
+                lastVals.put(cpIndex, "None");
+            } catch (NumberFormatException e) {
+                System.err.println("Invalid CP key format: " + cp);
+            }
+        });*/
+        /*try {
+            // Pause for 1 second (1000 milliseconds)
+            Thread.sleep(10); 
+        } catch (InterruptedException e) {
+            // It is best practice to restore the interrupt flag
+            Thread.currentThread().interrupt(); 
+            System.out.println("Thread was interrupted!");
+        }*/
         while (running) {
             if (ts.getSettings().isSync()) {
                 waitSyncSignal();
@@ -272,7 +394,7 @@ public class LocalAgArch extends AgArch implements Runnable, Serializable {
                 getFirstAgArch().incCycleNumber(); // should not increment in case of sync execution
                 reasoningCycle();
                 if (ts.canSleep())
-                    sleep();
+                    sleepCJ(); 
             }
         }
         logger.fine("I finished!");
@@ -291,6 +413,27 @@ public class LocalAgArch extends AgArch implements Runnable, Serializable {
                     sleepSync.wait(sleepTime); // wait for messages
                     if (sleepTime < MAX_SLEEP)
                         sleepTime += 100;
+                }
+            }
+        } catch (InterruptedException e) {
+        } catch (Exception e) {
+            logger.log(Level.WARNING,"Error in sleep.", e);
+        }
+    }
+
+    // LBB: modified to a fixed 100ms sleep
+    public void sleepCJ() {
+        int i=10;
+        try {
+            if (!getTS().getSettings().isSync()) {
+                while(i-- > 0){
+                    //logger.info("Entering in sleep mode....");
+                    synchronized (sleepSync) {
+                        sleepSync.wait(10); // wait for messages
+                    }
+                    if(perceiveCP() != null){
+                        break;
+                    }                         
                 }
             }
         } catch (InterruptedException e) {
@@ -328,8 +471,57 @@ public class LocalAgArch extends AgArch implements Runnable, Serializable {
         super.perceive();
         if (infraEnv == null) return null;
         Collection<Literal> percepts = infraEnv.getUserEnvironment().getPercepts(getAgName());
-        if (logger.isLoggable(Level.FINE) && percepts != null) logger.fine("percepts: " + percepts);
+        //if (logger.isLoggable(Level.FINE) && percepts != null) logger.fine("percepts: " + percepts);
         return percepts;
+    }
+
+    /* LBB implementartion for critical things
+     * If 'infraEnv' is NULL it means this function will not be used, and another implementation is provided in a different xxAgArch implementation (eg. DemoEmbeddedAgentArch)
+     */
+   @Override
+    public Boolean[] perceiveCP() { 
+        super.perceiveCP();
+        if (infraEnv == null) return null;
+        Boolean[] EnvPercepts = infraEnv.getUserEnvironment().getPerceptsCBS(getAgName());
+        Circumstance C = getTS().getC();
+        C.CPM.clear();
+        for (Map.Entry<Integer, String> binding : cpBindings.entrySet()) {
+            String functor = binding.getValue(); // e.g., "cp0"
+            int cpIndex = Integer.parseInt(functor.replace("cp", ""));
+            if (EnvPercepts[cpIndex] == Boolean.FALSE) continue;
+            int priority = getPriority(functor);
+            String reaction = cpReactions.getOrDefault(functor, "handle_" + functor);
+            String mode = priorityToMode.get(priority);
+            int k = 0;
+            try {
+                switch (mode) {
+                    case "Bypass":
+                        ActionExec action = null;
+                        action = new ActionExec(new LiteralImpl("critReac0"), null); //LBB: FIX for proper function, e.g. ag.selectActionLB()
+                        act(action);
+                        infraEnv.getUserEnvironment().resetCBS();
+                        break;
+
+                    case "Expedited-RC":
+                        Literal percept = new LiteralImpl("cb"+cpIndex); 
+                        Trigger te = new Trigger(TEOperator.add, TEType.belief, percept);
+                        C.CPM.put(te.getPredicateIndicator(), true);
+                        break;
+
+                    default: // Standard-RC
+                        Literal lit = Literal.parseLiteral("cr0Per(" + k + ")");
+                        infraEnv.getUserEnvironment().addPercept(lit);
+                        k=k+1;
+                }
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
+        }
+        return EnvPercepts;
+    }
+
+    private int getPriority(String functor) {
+        return cpToPriority.getOrDefault(functor, 3);
     }
 
     // this is used by the .send internal action in stdlib

@@ -1,7 +1,10 @@
 package jason.asSemantics;
 
 import java.io.Serializable;
+import java.util.Arrays;
 import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.LinkedList;
@@ -13,11 +16,14 @@ import java.util.concurrent.TimeUnit;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
+import javax.naming.Context;
+
 import jason.JasonException;
 import jason.NoValueException;
 import jason.RevisionFailedException;
 import jason.architecture.AgArch;
 import jason.asSemantics.GoalListener.GoalStates;
+import jason.asSemantics.Tuple;
 import jason.asSyntax.ASSyntax;
 import jason.asSyntax.Atom;
 import jason.asSyntax.BinaryStructure;
@@ -34,6 +40,7 @@ import jason.asSyntax.PlanBody;
 import jason.asSyntax.PlanBody.BodyType;
 import jason.asSyntax.PlanBodyImpl;
 import jason.asSyntax.PlanLibrary;
+import jason.asSyntax.PredicateIndicator;
 import jason.asSyntax.SourceInfo;
 import jason.asSyntax.StringTermImpl;
 import jason.asSyntax.Structure;
@@ -76,6 +83,7 @@ public class TransitionSystem implements Serializable {
     private int           nrcslbr         = Settings.ODefaultNRC; // number of reasoning cycles since last belief revision
 
     private boolean       sleepingEvt     = false;
+    private boolean       cModeActive     = false;
 
     private List<GoalListener>  goalListeners = null;
 
@@ -407,6 +415,7 @@ public class TransitionSystem implements Serializable {
         // Rule for atomic, if there is an atomic intention, do not select event
         if (C.hasAtomicIntention()) {
             stepDeliberate = State.ProcAct; // need to go to ProcAct to see if an atomic intention received a feedback action
+            
             return;
         }
 
@@ -446,7 +455,6 @@ public class TransitionSystem implements Serializable {
                             for (IntendedMeans im: i) {
                                 if (im.getPlan().hasSubPlans()) {
                                     List<Plan> relPlans = im.getPlan().getSubPlans().getCandidatePlans(C.SE.getTrigger());
-                                    //System.out.println("***"+C.SE.getTrigger()+" try plans in "+im.getPlan().getTrigger()+" -- "+(relPlans != null));
                                     if (relPlans != null) {
                                         for (Plan p: relPlans) {
                                             // test if we have an option
@@ -605,6 +613,10 @@ public class TransitionSystem implements Serializable {
             // relevant by chance, so just carry on instead of dropping the
             // intention
             Intention i = C.SE.intention;
+            if (i.peek() == null) {
+                logger.warning("Intention.peek() is null before joinRenamedVarsIntoIntentionUnifier");
+                return;
+            }
             joinRenamedVarsIntoIntentionUnifier(i.peek(), i.peek().unif);
             removeActionReQueue(i);
         } else if (setts.requeue()) {
@@ -731,9 +743,6 @@ public class TransitionSystem implements Serializable {
             // begin tail recursion optimisation (TRO)
             if (setts.isTROon()) {
                 IntendedMeans top = C.SE.intention.peek(); // top = the IM that will be removed from the intention due to TRO
-                //System.out.println(top.getTrigger().isGoal()+"=1="+im.getTrigger().isGoal());
-                //System.out.println(top.getTrigger().getLiteral().getPredicateIndicator()+"=2="+im.getTrigger().getLiteral().getPredicateIndicator());
-                //System.out.println(top.getTrigger()+"=3="+im.getTrigger());
 
                 // next test if the condition for TOR (comparing top and the IM being added)
                 if (top != null &&
@@ -1014,6 +1023,7 @@ public class TransitionSystem implements Serializable {
             break;
 
         // Rule Test
+
         case test:
             LogicalFormula f = (LogicalFormula)bTerm;
             if (ag.believes(f, u)) {
@@ -1251,15 +1261,11 @@ public class TransitionSystem implements Serializable {
     private void joinRenamedVarsIntoIntentionUnifier(IntendedMeans im, Unifier values) {
         if (im.renamedVars != null) {
             for (VarTerm ov: im.renamedVars.function.keySet()) {
-                //System.out.println("looking for a value for "+ov+" in "+im.renamedVars+" and "+topIM.unif);
                 UnnamedVar vt = (UnnamedVar)im.renamedVars.function.get(ov);
-                //System.out.println("   via "+vt);
                 im.unif.unifiesNoUndo(ov, vt); // introduces the renaming in the current unif
                 // if vt has got a value from the top (a "return" value), include this value in the current unif
                 Term vl = values.function.get(vt);
-                //System.out.println(ov+"="+vt+"="+vl);
                 if (vl != null) { // vt has value in top
-                    //System.out.println("   and found "+vl);
                     vl = vl.capply(values);
                     if (vl.isLiteral())
                         ((Literal)vl).makeVarsAnnon();
@@ -1338,8 +1344,8 @@ public class TransitionSystem implements Serializable {
 
                 for (Option opt: rp) {
                     LogicalFormula context = opt.getPlan().getContext();
-                    if (getLogger().isLoggable(Level.FINE))
-                        getLogger().log(Level.FINE, "option for "+C.SE.getTrigger()+" is plan "+opt.getPlan().getLabel() + " " + opt.getPlan().getTrigger() + " : " + context + " -- with unification "+opt.getUnifier());
+                    //if (getLogger().isLoggable(Level.FINE))
+                    //    getLogger().log(Level.FINE, "option for "+C.SE.getTrigger()+" is plan "+opt.getPlan().getLabel() + " " + opt.getPlan().getTrigger() + " : " + context + " -- with unification "+opt.getUnifier());
 
                     if (context == null) { // context is true
                         if (ap == null) ap = new LinkedList<>();
@@ -1348,8 +1354,6 @@ public class TransitionSystem implements Serializable {
                             getLogger().log(Level.FINE, "     "+opt.getPlan().getLabel() + " is applicable with unification "+opt.getUnifier());
                     } else {
                         boolean allUnifs = opt.getPlan().isAllUnifs();
-
-
                         Iterator<Unifier> r = context.logicalConsequence(ag, opt.getUnifier());
                         boolean isApplicable = false;
                         if (r != null) {
@@ -1422,6 +1426,64 @@ public class TransitionSystem implements Serializable {
             C.addRunningIntention(i);
         } else {
             logger.fine("trying to update a finished intention!");
+        }
+    }
+
+   /*private void removeActionReQueue(Intention i) {
+        // --- Defensive: handle null intention entirely ---
+        if (i == null) {
+            logger.fine("removeActionReQueue called with null intention — skipping.");
+            return;
+        }
+
+        try {
+            // --- Defensive: check if intention is finished ---
+            if (i.isFinished()) {
+                // Intention done, nothing to requeue
+                return;
+            }
+
+            // --- Retrieve the current IntendedMeans safely ---
+            IntendedMeans im = null;
+            try {
+                im = i.peek(); // may return null or throw
+            } catch (Exception e) {
+                logger.fine("removeActionReQueue: could not peek intention — skipping requeue.");
+                return;
+            }
+
+            if (im == null) {
+                logger.fine("removeActionReQueue: peek() returned null — skipping requeue.");
+                return;
+            }
+
+            // --- Defensive: check the plan inside IntendedMeans ---
+            Plan plan = im.getPlan();
+            if (plan == null) {
+                logger.fine("removeActionReQueue: no plan in intended means — skipping.");
+                return;
+            }
+
+            // --- Defensive: check plan body iterator ---
+            if (im.getCurrentStep() == null) {
+                logger.fine("removeActionReQueue: current step is null — skipping.");
+                return;
+            }
+
+            // --- Original logic: remove the finished step and, if not finished, push back ---
+            im.removeCurrentStep();
+
+            // If intention still has pending steps, re-insert
+            if (!im.isFinished()) {
+                i.push(im); // safely re-enqueue current means
+            } else {
+                // If no more steps, mark intention as finished
+                i.pop();
+            }
+
+        } catch (Throwable t) {
+            // --- Fail-safe: never allow crash inside reasoning cycle ---
+            logger.log(Level.WARNING, "removeActionReQueue: unexpected error, skipping requeue safely.", t);
         }
     }
 
@@ -1663,14 +1725,14 @@ public class TransitionSystem implements Serializable {
 
     public void sense() {
         try {
-            if (logger.isLoggable(Level.FINE)) logger.fine("Start sense");
+            //if (logger.isLoggable(Level.FINE)) logger.fine("Start sense " + getAgArch().getCycleNumber() ); 
 
             C.resetSense();
 
             if (nrcslbr >= setts.nrcbp()) {
                 nrcslbr = 0;
                 synchronized (C.syncApPlanSense) {
-                    ag.buf(getAgArch().perceive());
+                    ag.buf(getAgArch().perceive()); //original                        
                 }
                 getAgArch().checkMail();
             }
@@ -1697,6 +1759,170 @@ public class TransitionSystem implements Serializable {
         } catch (Exception e) {
             logger.log(Level.SEVERE, "*** ERROR in the transition system (sense). "+C+"\nCreating a new C!", e);
             C.create();
+        }
+    }
+
+    public void expeditedRP() {
+        Literal cModeLit = new LiteralImpl("criticalMode");
+        Boolean[] cbsPercepts = null;
+        long start = 0;
+        long endPer = 0;
+        long count = 0;
+
+
+        if(getAgArch().getCycleNumber() < 10)
+            return; 
+
+        // FIX: no need to be synchronized
+        try { 
+            start = System.nanoTime();
+            synchronized (C.syncApPlanSense) {
+                cbsPercepts = getAgArch().perceiveCP();
+                //count = Arrays.stream(cbsPercepts).filter(Boolean::booleanValue).count();
+                //System.out.println(Arrays.toString(cbsPercepts));
+                //System.out.println("Number of true values: " + count);
+            }
+            endPer = System.nanoTime();           
+        } catch (Exception e) {
+            logger.log(Level.SEVERE, "*** ERROR in the LBB transition system (sense). "+C+"\nCreating a new C!", e);
+            C.create();
+        }
+
+        try {
+            if(C.CPM.size() > 0){
+                //System.out.println("entering critical mode");
+                cModeActive = true;
+                getAg().getBB().add(cModeLit);
+                expedited_deliberate();
+
+                //3. trigger all elements within CRL (enabled CRs)
+                ActionExec action = null;
+                final Intention curInt = C.SI;
+                Unifier u;
+                try {
+                    IntendedMeans im = curInt.peek();  // May throw NullPointerException
+                    u = im.unif;                        // May also throw if im is null
+                } catch (Exception e) {
+                    u = new Unifier();                 // Fallback: create new Unifier
+                    }
+
+                for (PlanBody pBody : C.CRL){
+                    Term     bTerm = pBody.getBodyTerm();
+                    Literal  bodyTer = null;
+                    Literal  body = null;   //Going back to old version for now to debug
+                    
+                    if (bTerm instanceof Literal)
+                        bodyTer = (Literal)bTerm; 
+                        body = (Literal)bTerm;
+
+                        switch (pBody.getBodyType()) {
+                        case action:
+                            action = new ActionExec(bodyTer, null); 
+                            if (action != null) 
+                                getAgArch().act(action); 
+                            break; //end action
+                        
+                        case internalAction:
+                            boolean ok = false;
+                            List<Term> errorAnnots = null;
+                            try {
+                                InternalAction ia = ((InternalActionLiteral)bTerm).getIA(ag);
+                                Term[] terms      = ia.prepareArguments(bodyTer, u); // clone and apply args
+                                Object oresult    = ia.execute(this, u, terms);
+                                if (oresult != null) {
+                                    ok = oresult instanceof Boolean && (Boolean)oresult;
+                                    if (!ok) { // IA returned false
+                                        errorAnnots = JasonException.createBasicErrorAnnots("ia_failed", "");
+                                    }
+                                }                            
+                            } catch (Exception e) {
+                                if (bodyTer == null)
+                                    logger.log(Level.SEVERE, "LBB: intention with null body in '"+pBody, e);
+                                else
+                                    logger.log(Level.SEVERE, bodyTer.getErrorMsg()+": "+ e.getMessage(), e);
+                            } catch (Error e) {
+                                logger.log(Level.SEVERE, bodyTer.getErrorMsg()+": "+ e.getMessage(), e);
+                            }
+                            break;  //end internalAction*/
+
+                        case achieve:
+                            body = prepareBodyForEvent(body, u, curInt.peek());
+                            Event evt = C.addAchvGoal(body, curInt);
+                            stepAct = State.StartRC;
+                            checkHardDeadline(evt);
+                            break;
+
+                        // Rule Achieve as a New Focus (the !! operator)
+                        case achieveNF:
+                            body = prepareBodyForEvent(body, u, null);
+                            evt  = C.addAchvGoal(body, Intention.EmptyInt);
+                            checkHardDeadline(evt);
+                            removeActionReQueue(curInt);
+                            break;
+                        case test:
+                            LogicalFormula f = (LogicalFormula)bTerm;
+                            if (ag.believes(f, u)) {
+                                //System.out.println("Debugging removeActionRequeue, current U: "+u);
+                                //removeActionReQueue(curInt);
+                            } /*else {
+                                boolean fail = true;
+                                // generate event when using literal in the test (no events for log. expr. like ?(a & b))
+                                if (f.isLiteral() && !(f instanceof BinaryStructure)) {
+                                    body = prepareBodyForEvent(body, u, curInt.peek());
+                                    if (body.isLiteral()) { // in case body is a var with content that is not a literal (note the VarTerm pass in the instanceof Literal)
+                                        Trigger te = new Trigger(TEOperator.add, TEType.test, body);
+                                        evt = new Event(te, curInt);
+                                        if (ag.getPL().hasCandidatePlan(te)) {
+                                            if (logger.isLoggable(Level.FINE)) logger.fine("Test Goal '" + bTerm + "' failed as simple query. Generating internal event for it: "+te);
+                                            C.addEvent(evt);
+                                            stepAct = State.StartRC;
+                                            fail = false;
+                                        }
+                                    }
+                                }
+                                if (fail) {
+                                    if (logger.isLoggable(Level.FINE)) logger.fine("Test '"+bTerm+"' failed ("+pBody.getSrcInfo()+").");
+                                    generateGoalDeletion(curInt, JasonException.createBasicErrorAnnots("test_goal_failed", "Failed to test '"+bTerm+"'"), ASSyntax.createAtom("test_goal_failed"));
+                                }
+                            }*/
+                            break;
+
+                        }
+                    
+                    long tExec = System.nanoTime();
+                }
+            }                    
+            else if(cModeActive){
+                    getAg().getBB().remove(cModeLit);
+                    cModeActive = false;
+            }
+        } catch (Exception e) {
+            logger.log(Level.SEVERE, "*** ERROR in the LBB transition system (act). "+C+"\nCreating a new C!", e);
+            C.create();
+        }
+    }
+
+    private void expedited_deliberate() {
+        C.CRL.clear();
+        for (Map.Entry<PredicateIndicator, Boolean> entry : C.CPM.entrySet()) {
+                PredicateIndicator  cpKey = entry.getKey();
+                List<Plan> planList = ag.getPL().getCLM().get(cpKey); //C.CLM.get(cpKey);
+                for (Plan plan : planList) {
+                    LogicalFormula context = plan.getContext();
+                    if (context == null) { // context is true
+                        C.CRL.add(plan.getBody());
+                    }
+                    else{
+                        Iterator<Unifier> r = context.logicalConsequence(ag, new Unifier()); //relUn); //opt.getUnifier());
+                        if (r != null && r.hasNext()){       //Multiple Lines plans
+                            PlanBody current = plan.getBody();
+                            while (current != null) {
+                                C.CRL.add(current);
+                                current = current.getBodyNext();
+                            }
+                        }
+                    }
+                }
         }
     }
 

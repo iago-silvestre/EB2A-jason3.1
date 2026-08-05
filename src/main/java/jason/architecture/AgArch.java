@@ -162,6 +162,14 @@ public class AgArch implements Comparable<AgArch>, Serializable {
             return successor.perceive();
     }
 
+    // LBB clone
+    public Boolean[] perceiveCP() {
+        if (successor == null)
+            return null;
+        else 
+            return successor.perceiveCP();            
+    }
+    
     /** Reads the agent's mailbox and adds messages into
         the agent's circumstance */
     public void checkMail() {
@@ -179,6 +187,7 @@ public class AgArch implements Comparable<AgArch>, Serializable {
         if (successor != null)
             successor.act(action);
     }
+
 
     /** called to inform that the action execution is finished */
     public void actionExecuted(ActionExec act) {

@@ -11,17 +11,25 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.logging.Level;
 
 import org.w3c.dom.Document;
 import org.w3c.dom.Element;
 
+import static jason.asSyntax.ASSyntax.*;
+import jason.asSyntax.*;
+import jason.architecture.AgArch;
 import jason.JasonException;
+import jason.asSemantics.Circumstance;
+import jason.asSemantics.TransitionSystem;
 import jason.asSyntax.Trigger.TEOperator;
 import jason.asSyntax.Trigger.TEType;
 import jason.asSyntax.parser.ParseException;
 import jason.bb.BeliefBase;
+import jason.infra.local.LocalAgArch;
 import jason.util.Config;
 import jason.util.ToDOM;
+
 
 /** Represents a set of plans used by an agent
 
@@ -33,8 +41,12 @@ public class PlanLibrary implements Iterable<Plan>, Serializable, ToDOM {
 
     public static String KQML_PLANS_FILE = "kqmlPlans.asl";
 
-    /** a MAP from TE to a list of relevant plans */
+    /** a MAP from TE to a list of relevant plans */ 
     private Map<PredicateIndicator,List<Plan>> relPlans = new ConcurrentHashMap<>();
+
+    /* LBB: next two lines are used by Expedited-Jason */
+    private Map<PredicateIndicator,List<Plan>> CLM = new ConcurrentHashMap<>();
+    private boolean isExpeditedJason = true;
 
     /**
      * All plans as defined in the AS code (maintains the order of the plans)
@@ -62,7 +74,7 @@ public class PlanLibrary implements Iterable<Plan>, Serializable, ToDOM {
 
     private boolean hasPlansForUpdateEvents = false;
 
-    public PlanLibrary() {
+    public PlanLibrary() { 
     }
 
     public PlanLibrary(PlanLibrary father) {
@@ -174,6 +186,13 @@ public class PlanLibrary implements Iterable<Plan>, Serializable, ToDOM {
 
     private final String kqmlReceivedFunctor = Config.get().getKqmlFunctor();
 
+   /**
+     * LBB function to return the Critical Perceptions Map
+     */
+    public Map<PredicateIndicator, List<Plan>> getCLM() {
+        return CLM;
+    }
+
     /**
      * Adds a plan into the plan library, either before or after all other
      * plans depending on the boolean parameter.
@@ -184,6 +203,22 @@ public class PlanLibrary implements Iterable<Plan>, Serializable, ToDOM {
      */
     public Plan add(Plan p, boolean before) throws JasonException {
         p.setScope(this);
+        if(isExpeditedJason){ // begin LBB for critical plans (this was also be implemented outside Jason, as a directive)
+            Atom cp_atom = createAtom("cr");
+            Trigger   tp = p.getTrigger();
+            PredicateIndicator pi = tp.getPredicateIndicator();
+            List<Plan> planL = null;
+            if(tp.getLiteral().hasAnnot(cp_atom)){ //add it to the CLM
+                if(CLM.containsKey(pi))   // key exists add to the existing list
+                    planL = CLM.get(pi);
+                else  // create a new list, as follows
+                    planL = new ArrayList<Plan>();    
+                planL.add(p);
+                CLM.put(pi, planL);
+                return p;
+            } 
+        } // end LBB for critical plans
+
         synchronized (lockPL) {
             // test p.label
             if (p.getLabel() != null && planLabels.keySet().contains( getStringForLabel(p.getLabel()))) {
